@@ -67,7 +67,7 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" ]; then
 		"$@" --skip-networking &
 		pid="$!"
 
-		mysql=( mysql --protocol=socket -uroot )
+		mysql=( mysql -uroot )
 
 		for i in {30..0}; do
 			if echo 'SELECT 1' | "${mysql[@]}" &> /dev/null; then
@@ -87,12 +87,15 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" ]; then
 		fi
 
 		if [ ! -z "$MYSQL_RANDOM_ROOT_PASSWORD" ]; then
-			MYSQL_ROOT_PASSWORD="$(pwgen -1 32)"
+			MYSQL_ROOT_PASSWORD="$(pwgen -1 24)"
 			echo "GENERATED ROOT PASSWORD: $MYSQL_ROOT_PASSWORD"
 		fi
+
+		echo "Recreating root user"
+
 		"${mysql[@]}" <<-EOSQL
-			-- What's done in this file shouldn't be replicated
-			--  or products like mysql-fabric won't work
+			-- Whats done in this file shouldnt be replicated
+			--  or products like mysql-fabric wont work
 			SET @@SESSION.SQL_LOG_BIN=0;
 
 			DELETE FROM mysql.user ;
@@ -106,31 +109,23 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" ]; then
 			mysql+=( -p"${MYSQL_ROOT_PASSWORD}" )
 		fi
 
+		if [ "$MYSQL_USER" -a "$MYSQL_PASSWORD" ]; then
+			echo "CREATE USER '$MYSQL_USER'@'%' IDENTIFIED BY '$MYSQL_PASSWORD' ;" | "${mysql[@]}"
+		fi
+
 		if [ "$MYSQL_DATABASE" ]; then
-			echo "CREATE DATABASE IF NOT EXISTS \`$MYSQL_DATABASE\` ;" | "${mysql[@]}"
-			mysql+=( "$MYSQL_DATABASE" )
+			MYSQL_DATABASE_ARRAY="$( echo "$MYSQL_DATABASE" | tr " " "\n" )"
+			for SINGLE_MYSQL_DATABASE in $MYSQL_DATABASE_ARRAY
+			do
+				echo "CREATE DATABASE IF NOT EXISTS \`$SINGLE_MYSQL_DATABASE\` ;" | "${mysql[@]}"
+				echo "GRANT ALL ON \`$SINGLE_MYSQL_DATABASE\`.* TO '$MYSQL_USER'@'%' ;" | "${mysql[@]}"
+			done
 		fi
 
 		if [ "$MYSQL_USER" -a "$MYSQL_PASSWORD" ]; then
-			echo "CREATE USER '$MYSQL_USER'@'%' IDENTIFIED BY '$MYSQL_PASSWORD' ;" | "${mysql[@]}"
-
-			if [ "$MYSQL_DATABASE" ]; then
-				echo "GRANT ALL ON \`$MYSQL_DATABASE\`.* TO '$MYSQL_USER'@'%' ;" | "${mysql[@]}"
-			fi
-
 			echo 'FLUSH PRIVILEGES ;' | "${mysql[@]}"
 		fi
 
-		echo
-		for f in /docker-entrypoint-initdb.d/*; do
-			case "$f" in
-				*.sh)     echo "$0: running $f"; . "$f" ;;
-				*.sql)    echo "$0: running $f"; "${mysql[@]}" < "$f"; echo ;;
-				*.sql.gz) echo "$0: running $f"; gunzip -c "$f" | "${mysql[@]}"; echo ;;
-				*)        echo "$0: ignoring $f" ;;
-			esac
-			echo
-		done
 
 		if ! kill -s TERM "$pid" || ! wait "$pid"; then
 			echo >&2 'MySQL init process failed.'
